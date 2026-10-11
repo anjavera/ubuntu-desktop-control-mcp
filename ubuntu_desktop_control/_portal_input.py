@@ -22,7 +22,9 @@ V = GLib.Variant
 TOKEN_FILE = os.environ.get(
     "UDC_RD_TOKEN_FILE", os.path.expanduser("~/.config/ubuntu-desktop-control/rd_restore_token")
 )
-STEP = float(os.environ.get("UDC_POINTER_STEP", "300"))
+STEP = float(os.environ.get("UDC_POINTER_STEP", "600"))
+STEP_DELAY = float(os.environ.get("UDC_STEP_DELAY", "0"))
+SETTLE = float(os.environ.get("UDC_SETTLE", "0.02"))
 BUTTONS = {"left": 272, "right": 273, "middle": 274}
 
 # pyautogui key names -> X keysym names
@@ -99,10 +101,36 @@ def _rel(dx, dy):
     _notify("NotifyPointerMotion", "(oa{sv}dd)", float(dx), float(dy))
 
 
+def _desktop_extent():
+    """(right, bottom) edge of the logical desktop from Mutter's DisplayConfig; generous fallback if unavailable."""
+    try:
+        _serial, monitors, logical, _props = bus.call_sync(
+            "org.gnome.Mutter.DisplayConfig", "/org/gnome/Mutter/DisplayConfig",
+            "org.gnome.Mutter.DisplayConfig", "GetCurrentState", None, None,
+            Gio.DBusCallFlags.NONE, -1, None).unpack()
+        size = {}
+        for m in monitors:
+            for mode in m[1]:
+                if mode[6].get("is-current"):
+                    size[m[0][0]] = (mode[1], mode[2])
+        right = bottom = 0.0
+        for x, y, scale, transform, _primary, mons, _p in logical:
+            w, h = size[mons[0][0]]
+            if transform in (1, 3, 5, 7):
+                w, h = h, w
+            right = max(right, x + w / scale)
+            bottom = max(bottom, y + h / scale)
+        if right and bottom:
+            return right, bottom
+    except Exception:  # noqa: BLE001
+        pass
+    return 20000.0, 20000.0
+
+
 def _walk(dx, dy, duration=0.0):
     """Relative move in small steps (optionally spread over `duration` seconds)."""
     n = max(1, int(max(abs(dx), abs(dy)) // STEP) + 1)
-    delay = duration / n if duration else 0.003
+    delay = duration / n if duration else STEP_DELAY
     for _ in range(n):
         _rel(dx / n, dy / n)
         time.sleep(delay)
@@ -110,9 +138,10 @@ def _walk(dx, dy, duration=0.0):
 
 def _home():
     global _pos
-    _walk(0, -20000)   # up first, then left: a diagonal jump gets stuck at the current monitor's corner
-    _walk(-20000, 0)
-    time.sleep(0.05)
+    right, bottom = _desktop_extent()   # no need to travel further than the desktop is big
+    _walk(0, -(bottom + 50))   # up first, then left: a diagonal jump gets stuck at the current monitor's corner
+    _walk(-(right + 50), 0)
+    time.sleep(SETTLE)
     _pos = (0.0, 0.0)
 
 
@@ -127,7 +156,7 @@ def goto(x, y, duration=0.0, rehome=True):
     else:
         _walk(x - _pos[0], y - _pos[1], duration)
     _pos = (float(x), float(y))
-    time.sleep(0.03)
+    time.sleep(SETTLE)
 
 
 def _button(name, state):
